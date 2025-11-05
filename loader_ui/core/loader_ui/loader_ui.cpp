@@ -391,6 +391,9 @@ void c_loader_ui::shutdown() {
     if (!initialized) { return; }
     release_product_views();
     release_fallback_icons();
+    user = user_profile{};
+    user.subscriptions.clear();
+    subscription_storage.clear();
     state = ui_state{};
     initialized = false;
 }
@@ -555,18 +558,37 @@ void c_loader_ui::render()
 void c_loader_ui::set_authenticated(bool auth, user_profile* new_profile) {
     state.authenticated = auth;
 
-    if (new_profile != nullptr)
-        user = *new_profile;
-
-    if (state.authenticated) {
-        products_dirty = true;
-        show_main();
-    }
-    else {
-        release_product_views();
-        products_dirty = false;
+    if (!state.authenticated) {
+        subscription_storage.clear();
+        user = user_profile{};
+        user.subscriptions.clear();
         show_login();
+        return;
     }
+
+    if (new_profile != nullptr) {
+        user.username = new_profile->username;
+        user.email = new_profile->email;
+        user.ip = new_profile->ip;
+
+        subscription_storage.clear();
+        user.subscriptions.clear();
+        subscription_storage.reserve(new_profile->subscriptions.size());
+        for (auto* source : new_profile->subscriptions) {
+            if (!source) {
+                continue;
+            }
+            auto copy = std::make_unique<user_subscription>(*source);
+            user.subscriptions.push_back(copy.get());
+            subscription_storage.emplace_back(std::move(copy));
+        }
+    } else {
+        subscription_storage.clear();
+        user.subscriptions.clear();
+    }
+
+    products_dirty = true;
+    show_main();
 }
 
 
@@ -1001,6 +1023,7 @@ static void(*g_register_callback)(const char*, const char*, const char*) = nullp
 static void(*g_license_callback)(const char*, const char*) = nullptr;
 static void(*g_exit_callback)() = nullptr;
 static void (*g_filestream_callback)(const char*) = nullptr;
+static void(*g_auth_mode_callback)(bool) = nullptr;
 
 extern "C" {
     LOADER_UI_API c_loader_ui* create_loader_ui() {
@@ -1054,8 +1077,41 @@ extern "C" {
         if (ui) ui->set_loading(loading);
     }
 
+    LOADER_UI_API void ui_set_loading_progress(c_loader_ui* ui, float progress) {
+        if (ui) ui->set_loading_progress(progress);
+    }
+
     LOADER_UI_API void ui_close(c_loader_ui* ui) {
         if (ui) ui->close();
+    }
+
+    LOADER_UI_API void ui_set_local_account(c_loader_ui* ui, const char* username) {
+        if (ui && username) {
+            ui->set_local_account_username(username);
+        }
+    }
+
+    LOADER_UI_API void ui_set_license_only_mode(c_loader_ui* ui, bool enabled) {
+        if (ui) {
+            ui->set_license_only_mode(enabled);
+        }
+    }
+
+    LOADER_UI_API void ui_set_auth_mode_callback(c_loader_ui* ui, void(*callback)(bool)) {
+        if (!ui) return;
+
+        g_auth_mode_callback = callback;
+
+        if (callback) {
+            ui->set_auth_mode_callback([](bool enabled) {
+                if (g_auth_mode_callback) {
+                    g_auth_mode_callback(enabled);
+                }
+                });
+        }
+        else {
+            ui->set_auth_mode_callback(nullptr);
+        }
     }
 
     LOADER_UI_API void ui_set_login_callback(c_loader_ui* ui, void(*callback)(const char*, const char*)) {
